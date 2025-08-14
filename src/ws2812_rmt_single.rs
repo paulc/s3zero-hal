@@ -27,24 +27,26 @@ impl<'a, C: TxChannelInternal> Ws2812<C> {
     pub fn new(
         c: impl TxChannelCreator<'a, Blocking, Raw = C>,
         gpio: impl PeripheralOutput<'a>,
-    ) -> Self {
+    ) -> anyhow::Result<Self> {
         let tx_config = TxChannelConfig::default()
             .with_clk_divider(2)
             .with_idle_output_level(Level::Low)
             .with_carrier_modulation(false);
-        let channel = c.configure_tx(gpio, tx_config).unwrap();
+        let channel = c
+            .configure_tx(gpio, tx_config)
+            .map_err(|e| anyhow::anyhow!("RMT Channel: {e:?}"))?;
 
         let t0: u32 = PulseCode::new(Level::High, T0H, Level::Low, T0L);
         let t1: u32 = PulseCode::new(Level::High, T1H, Level::Low, T1L);
         let reset: u32 = PulseCode::new(Level::Low, RESET, Level::High, 0);
-        Self {
+        Ok(Self {
             channel: Some(channel),
             t0,
             t1,
             reset,
-        }
+        })
     }
-    pub fn set(&mut self, colour: Rgb) {
+    pub fn set(&mut self, colour: Rgb) -> anyhow::Result<()> {
         let c = colour.to_u32(RgbLayout::Grb);
 
         // Generate pulses
@@ -57,12 +59,18 @@ impl<'a, C: TxChannelInternal> Ws2812<C> {
         pulses[24] = self.reset;
 
         // Take ownership of the channel
-        let channel = self.channel.take().unwrap();
+        let channel = self
+            .channel
+            .take()
+            .ok_or(anyhow::anyhow!("Error taking channel"))?;
 
         // Transmit the data
-        let tx = channel.transmit(&pulses).unwrap();
+        let tx = channel
+            .transmit(&pulses)
+            .map_err(|e| anyhow::anyhow!("RMT Transmit: {e:?}"))?;
 
         // Wait for transmission to complete and get the channel back
-        self.channel = Some(tx.wait().unwrap());
+        self.channel = Some(tx.wait().map_err(|e| anyhow::anyhow!("RMT Wait: {e:?}"))?);
+        Ok(())
     }
 }

@@ -50,8 +50,10 @@ async fn main(spawner: Spawner) {
     let _ = spawner;
 
     // Initialize RMT peripheral
-    let rmt = Rmt::new(peripherals.RMT, Rate::from_mhz(RMT_FREQ_MHZ)).unwrap();
-    let mut ws2812 = Ws2812::new(rmt.channel0, peripherals.GPIO21);
+    let rmt =
+        Rmt::new(peripherals.RMT, Rate::from_mhz(RMT_FREQ_MHZ)).expect("Error initialising RMT");
+    let mut ws2812 =
+        Ws2812::new(rmt.channel0, peripherals.GPIO21).expect("Error initialising Ws2812");
 
     loop {
         for c in [
@@ -60,7 +62,7 @@ async fn main(spawner: Spawner) {
             Rgb::new(0, 0, 255),
         ] {
             log::info!("{c:?}");
-            ws2812.set(c);
+            ws2812.set(c).expect("Error setting Ws2812");
             Timer::after(Duration::from_secs(1)).await;
         }
     }
