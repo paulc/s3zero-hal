@@ -10,50 +10,21 @@ use embassy_executor::Spawner;
 use embassy_time::{Duration, Timer};
 use esp_backtrace as _;
 use esp_hal::clock::CpuClock;
-use esp_hal::rmt::Rmt;
-use esp_hal::time::Rate;
+use esp_hal::gpio::{AnyPin, Level, Output, OutputConfig};
 use esp_hal::timer::systimer::SystemTimer;
 use esp_hal::timer::timg::TimerGroup;
-use log::info;
-
-use s3zero_hal::rgb::Rgb;
-use s3zero_hal::ws2812_rmt_single::{Ws2812Async, Ws2812Fixed, RMT_FREQ_MHZ};
 
 // This creates a default app-descriptor required by the esp-idf bootloader.
 // For more information see: <https://docs.espressif.com/projects/esp-idf/en/stable/esp32/api-reference/system/app_image_format.html#application-description>
 esp_bootloader_esp_idf::esp_app_desc!();
 
 #[embassy_executor::task]
-async fn led(mut ws2812: Ws2812Fixed) {
+async fn led(led: AnyPin<'static>) {
+    let mut led = Output::new(led, Level::High, OutputConfig::default());
     loop {
-        for c in [
-            Rgb::new(255, 0, 0),
-            Rgb::new(0, 255, 0),
-            Rgb::new(0, 0, 255),
-        ] {
-            log::info!("{c:?}");
-            ws2812.set(c).expect("Error setting Ws2812");
-            Timer::after(Duration::from_secs(1)).await;
-        }
-    }
-}
-
-#[embassy_executor::task]
-async fn led_generic(
-    chan: esp_hal::rmt::ChannelCreator<esp_hal::Async, 0>,
-    gpio: esp_hal::gpio::AnyPin<'static>,
-) {
-    let mut ws2812 = Ws2812Async::new(chan, gpio).expect("Error initialising Ws2812");
-    loop {
-        for c in [
-            Rgb::new(255, 0, 0),
-            Rgb::new(0, 255, 0),
-            Rgb::new(0, 0, 255),
-        ] {
-            log::info!("{c:?}");
-            ws2812.set(c).await.expect("Error setting Ws2812");
-            Timer::after(Duration::from_secs(1)).await;
-        }
+        led.toggle();
+        log::info!("LED: {}", led.is_set_low());
+        Timer::after(Duration::from_millis(200)).await;
     }
 }
 
@@ -71,7 +42,7 @@ async fn main(spawner: Spawner) {
     let timer0 = SystemTimer::new(peripherals.SYSTIMER);
     esp_hal_embassy::init(timer0.alarm0);
 
-    info!("Embassy initialized!");
+    log::info!("Embassy initialized!");
 
     let rng = esp_hal::rng::Rng::new(peripherals.RNG);
     let timer1 = TimerGroup::new(peripherals.TIMG0);
@@ -81,17 +52,8 @@ async fn main(spawner: Spawner) {
     let (mut _wifi_controller, _interfaces) = esp_wifi::wifi::new(&wifi_init, peripherals.WIFI)
         .expect("Failed to initialize WIFI controller");
 
-    // Initialize RMT peripheral
-    let rmt = Rmt::new(peripherals.RMT, Rate::from_mhz(RMT_FREQ_MHZ))
-        .expect("Error initialising RMT")
-        .into_async();
-
-    //let ws2812 =
-    //    Ws2812Fixed::new(rmt.channel0, peripherals.GPIO21).expect("Error initialising Ws2812");
-    //spawner.spawn(led(ws2812)).expect("Error spawning led task");
-
     spawner
-        .spawn(led_generic(rmt.channel0, peripherals.GPIO21.into()))
+        .spawn(led(peripherals.GPIO21.into()))
         .expect("Error spawning led task");
 
     loop {
