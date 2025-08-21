@@ -56,6 +56,10 @@ async fn main(spawner: Spawner) {
         .spawn(led(peripherals.GPIO21.into()))
         .expect("Error spawning led task");
 
+    // Initialize PSRAM first
+    //let (_, size) = esp_hal::psram::psram_raw_parts(&peripherals.PSRAM);
+    //log::info!("PSRAM Avail: {size}");
+
     loop {
         log::info!("+++ MAIN +++");
         Timer::after(Duration::from_secs(5)).await;
