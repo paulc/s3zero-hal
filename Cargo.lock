@@ -659,6 +659,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "esp-storage"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f276ad8a3bdc6b47cd92a3e91013f2e42dce9b3fc5023392063387a1ce2ed69a"
+dependencies = [
+ "critical-section",
+ "document-features",
+ "embedded-storage",
+ "esp-rom-sys",
+]
+
+[[package]]
 name = "esp-synopsys-usb-otg"
 version = "0.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1022,6 +1034,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "onewire"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "46326d0426636b36a753c6e795e2eeb431581f9663f90df7117a7842aad5b391"
+dependencies = [
+ "byteorder",
+ "embedded-hal 1.0.0",
+]
+
+[[package]]
 name = "paste"
 version = "1.0.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1179,19 +1201,25 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "critical-section",
+ "embassy-embedded-hal 0.4.0",
  "embassy-executor",
  "embassy-net",
  "embassy-time",
+ "embedded-hal 1.0.0",
  "embedded-io",
  "embedded-io-async",
+ "embedded-storage",
  "esp-alloc",
  "esp-backtrace",
  "esp-bootloader-esp-idf",
  "esp-hal",
  "esp-hal-embassy",
  "esp-println",
+ "esp-storage",
  "esp-wifi",
  "log",
+ "onewire",
+ "sequential-storage",
  "smoltcp",
  "static_cell",
 ]
@@ -1201,6 +1229,15 @@ name = "semihosting"
 version = "0.1.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c3e1c7d2b77d80283c750a39c52f1ab4d17234e8f30bca43550f5b2375f41d5f"
+
+[[package]]
+name = "sequential-storage"
+version = "4.0.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "516ed74ad8268ec0d78c574af8fc7e09a9c3a0df63c7692c588a10d7097dea3b"
+dependencies = [
+ "embedded-storage-async",
+]
 
 [[package]]
 name = "serde"
