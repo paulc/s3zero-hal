@@ -7,6 +7,7 @@ version      = "0.1.0"
 [[bin]]
 name = "s3zero-hal"
 path = "./src/bin/main.rs"
+harness = false
 
 [dependencies]
 esp-bootloader-esp-idf = { version = "0.2.0", features = ["esp32s3"] }
@@ -72,7 +73,7 @@ sequential-storage = "4.0.2"
 embassy-embedded-hal = "0.4.0"
 embedded-hal = "1.0.0"
 onewire = "0.4.0"
-
+esp-hal-rmt-onewire = "0.4.0"
 
 [profile.dev]
 # Rust debug is too slow.

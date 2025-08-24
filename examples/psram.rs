@@ -15,9 +15,10 @@ extern crate alloc;
 
 use alloc::{string::String, vec::Vec};
 
+use embedded_hal::delay::DelayNs;
 use esp_alloc as _;
 use esp_backtrace as _;
-use esp_hal::{main, psram};
+use esp_hal::{delay::Delay, main, psram};
 use esp_println::println;
 
 esp_bootloader_esp_idf::esp_app_desc!();
@@ -32,13 +33,11 @@ fn init_psram_heap(start: *mut u8, size: usize) {
     }
 }
 
-#[cfg(is_not_release)]
-compile_error!("PSRAM example must be built in release mode!");
-
 #[main]
 fn main() -> ! {
     esp_println::logger::init_logger_from_env();
     let peripherals = esp_hal::init(esp_hal::Config::default());
+    let mut delay = Delay::new();
 
     let (start, size) = psram::psram_raw_parts(&peripherals.PSRAM);
 
@@ -66,6 +65,7 @@ fn main() -> ! {
 
     println!("done");
 
-    loop {}
+    loop {
+        delay.delay_ms(1000);
+    }
 }
-

@@ -31,6 +31,7 @@ pub struct Ws2812Fixed {
 }
 
 impl Ws2812Fixed {
+    //let ws2812 = Ws2812Fixed::new(rmt.channel0, peripherals.GPIO21).unwrap();
     pub fn new<'a>(c: Ws2812Chan, gpio: impl PeripheralOutput<'a>) -> anyhow::Result<Self> {
         let tx_config = TxChannelConfig::default()
             .with_clk_divider(2)
@@ -55,6 +56,7 @@ impl Ws2812Fixed {
 
         // Generate pulses
         let mut pulses = [0_u32; 25];
+        #[allow(clippy::needless_range_loop)]
         for i in 0..24 {
             // Send MSB first
             let bit = (c >> (23 - i)) & 1;
@@ -115,6 +117,7 @@ impl<'a, C: TxChannelInternal> Ws2812<C> {
 
         // Generate pulses
         let mut pulses = [0_u32; 25];
+        #[allow(clippy::needless_range_loop)]
         for i in 0..24 {
             // Send MSB first
             let bit = (c >> (23 - i)) & 1;
@@ -175,6 +178,7 @@ impl<'a, C: TxChannelInternal> Ws2812Async<C> {
 
         // Generate pulses
         let mut pulses = [0_u32; 25];
+        #[allow(clippy::needless_range_loop)]
         for i in 0..24 {
             // Send MSB first
             let bit = (c >> (23 - i)) & 1;

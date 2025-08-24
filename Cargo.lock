@@ -600,6 +600,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "esp-hal-rmt-onewire"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e86daa36aa9e306ee9e9da2dd78f39e3c6082cbae4f60dc694f2ad3581a162df"
+dependencies = [
+ "embassy-futures",
+ "esp-hal",
+]
+
+[[package]]
 name = "esp-metadata"
 version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1214,6 +1224,7 @@ dependencies = [
  "esp-bootloader-esp-idf",
  "esp-hal",
  "esp-hal-embassy",
+ "esp-hal-rmt-onewire",
  "esp-println",
  "esp-storage",
  "esp-wifi",
