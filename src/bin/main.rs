@@ -90,7 +90,7 @@ async fn main(spawner: Spawner) {
         .expect("Error spawning led task");
 
     let mut ow = OneWire::new(rmt.channel3, rmt.channel4, peripherals.GPIO6).unwrap();
-    let mut ds18b20: Option<Ds18b20> = None;
+    let mut ds18b20 = heapless::Vec::<Ds18b20, 5>::new();
 
     let mut s = Search::new();
     loop {
@@ -99,7 +99,7 @@ async fn main(spawner: Spawner) {
                 let a = address.0.to_le_bytes();
                 if a[0] == 0x28 && check_onewire_crc(&a) {
                     log::info!("Found DS18B20 {address:?}");
-                    ds18b20 = Some(Ds18b20::new(address.0));
+                    ds18b20.push(Ds18b20::new(address.0)).unwrap();
                 } else {
                     log::info!("Found device {address:?} {}", check_onewire_crc(&a));
                 }
@@ -111,12 +111,13 @@ async fn main(spawner: Spawner) {
         }
     }
     loop {
-        if let Some(ref ds) = ds18b20 {
+        for ds in &ds18b20 {
             if let Ok(temp) = ds.read_temp(&mut ow).await {
-                log::info!("Temp: {temp}");
+                log::info!("Temp {}: {temp}", ds.address);
             }
             let _ = ds.initiate_conversion(&mut ow).await;
         }
         Timer::after(Duration::from_secs(1)).await;
+        log::info!("");
     }
 }

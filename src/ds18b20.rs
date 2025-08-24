@@ -1,7 +1,8 @@
 use esp_hal_rmt_onewire::{OneWire, OneWireConfig};
 
+#[derive(Debug)]
 pub struct Ds18b20 {
-    address: u64,
+    pub address: u64,
 }
 
 impl Ds18b20 {
