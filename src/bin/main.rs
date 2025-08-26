@@ -10,6 +10,7 @@ use embassy_executor::Spawner;
 use embassy_time::{Delay, Duration, Timer};
 use esp_backtrace as _;
 use esp_hal::clock::CpuClock;
+use esp_hal::i2c;
 use esp_hal::rmt::Rmt;
 use esp_hal::time::Rate;
 use esp_hal::timer::systimer::SystemTimer;
@@ -89,7 +90,7 @@ async fn onewire_task(tx_chan: OwTxRmtChan, rx_chan: OwRxRmtChan, pin: OwPin) {
     loop {
         for ds in &ds18b20 {
             if let Ok(temp) = ds.read_temp(&mut ow).await {
-                log::info!("Temp [{}]: {temp:.2}°C", ds.address);
+                log::info!("DS18B20 [{}]: {temp:.2}°C", ds.address);
             }
             let _ = ds.initiate_conversion(&mut ow).await;
         }
@@ -105,7 +106,7 @@ async fn main(spawner: Spawner) {
 
     let config = esp_hal::Config::default().with_cpu_clock(CpuClock::max());
     let peripherals = esp_hal::init(config);
-    let mut _delay = Delay;
+    let mut delay = Delay;
 
     esp_alloc::heap_allocator!(size: 64 * 1024);
 
@@ -135,7 +136,32 @@ async fn main(spawner: Spawner) {
         .spawn(onewire_task(rmt.channel3, rmt.channel4, peripherals.GPIO6))
         .expect("Error spawning OneWire task");
 
+    // Initialise I2C
+    let i2c_config = i2c::master::Config::default().with_frequency(Rate::from_khz(100));
+    let mut i2c = i2c::master::I2c::new(peripherals.I2C0, i2c_config)
+        .expect("Error initailising I2C")
+        .with_scl(peripherals.GPIO4)
+        .with_sda(peripherals.GPIO5)
+        .into_async();
+
+    // I2C Bus Scan
+    for addr in 0..=127 {
+        if let Ok(_) = i2c.write_async(addr, &[0]).await {
+            info!("Found I2C device at address: 0x{:02x}", addr);
+        }
+    }
+
+    let mut bme280 = bme280::i2c::BME280::new_primary(i2c);
+    bme280.init(&mut delay).expect("Error initialising BME280");
+
     loop {
         Timer::after(Duration::from_secs(1)).await;
+        if let Ok(m) = bme280.measure(&mut delay) {
+            log::info!(
+                "BME280: Temp = {:.2} Pressure = {:.0}",
+                m.temperature,
+                m.pressure
+            );
+        }
     }
 }

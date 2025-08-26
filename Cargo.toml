@@ -75,6 +75,7 @@ embedded-hal = "1.0.0"
 onewire = "0.4.0"
 esp-hal-rmt-onewire = "0.4.0"
 heapless = "0.9.1"
+bme280 = { version = "0.5.1", features = ["async"] }
 
 [profile.dev]
 # Rust debug is too slow.
