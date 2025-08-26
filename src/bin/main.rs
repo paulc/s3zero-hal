@@ -55,6 +55,48 @@ async fn led_generic(
     }
 }
 
+// OW Peripherals
+type OwTxRmtChan = esp_hal::rmt::ChannelCreator<esp_hal::Async, 3>;
+type OwRxRmtChan = esp_hal::rmt::ChannelCreator<esp_hal::Async, 4>;
+type OwPin = esp_hal::peripherals::GPIO6<'static>;
+
+#[embassy_executor::task]
+async fn onewire_task(tx_chan: OwTxRmtChan, rx_chan: OwRxRmtChan, pin: OwPin) {
+    log::info!("Starting OneWire task");
+    let mut ow = OneWire::new(tx_chan, rx_chan, pin).unwrap();
+    let mut ds18b20 = heapless::Vec::<Ds18b20, 5>::new();
+
+    // Scan OneWIre bus for DS18B20
+    let mut s = Search::new();
+    loop {
+        match s.next(&mut ow).await {
+            Ok(address) => {
+                let a = address.0.to_le_bytes();
+                if a[0] == 0x28 && check_onewire_crc(&a) {
+                    log::info!("Found DS18B20 {address:?}");
+                    ds18b20.push(Ds18b20::new(address.0)).unwrap();
+                } else {
+                    log::info!("Found device {address:?} {}", check_onewire_crc(&a));
+                }
+            }
+            Err(_) => {
+                log::info!("End of search");
+                break;
+            }
+        }
+    }
+    // Read temp
+    loop {
+        for ds in &ds18b20 {
+            if let Ok(temp) = ds.read_temp(&mut ow).await {
+                log::info!("Temp [{}]: {temp:.2}°C", ds.address);
+            }
+            let _ = ds.initiate_conversion(&mut ow).await;
+        }
+        Timer::after(Duration::from_secs(1)).await;
+    }
+}
+
 #[esp_hal_embassy::main]
 async fn main(spawner: Spawner) {
     // generator version: 0.5.0
@@ -89,35 +131,11 @@ async fn main(spawner: Spawner) {
         .spawn(led_generic(rmt.channel0, peripherals.GPIO21.into()))
         .expect("Error spawning led task");
 
-    let mut ow = OneWire::new(rmt.channel3, rmt.channel4, peripherals.GPIO6).unwrap();
-    let mut ds18b20 = heapless::Vec::<Ds18b20, 5>::new();
+    spawner
+        .spawn(onewire_task(rmt.channel3, rmt.channel4, peripherals.GPIO6))
+        .expect("Error spawning OneWire task");
 
-    let mut s = Search::new();
     loop {
-        match s.next(&mut ow).await {
-            Ok(address) => {
-                let a = address.0.to_le_bytes();
-                if a[0] == 0x28 && check_onewire_crc(&a) {
-                    log::info!("Found DS18B20 {address:?}");
-                    ds18b20.push(Ds18b20::new(address.0)).unwrap();
-                } else {
-                    log::info!("Found device {address:?} {}", check_onewire_crc(&a));
-                }
-            }
-            Err(_) => {
-                log::info!("End of search");
-                break;
-            }
-        }
-    }
-    loop {
-        for ds in &ds18b20 {
-            if let Ok(temp) = ds.read_temp(&mut ow).await {
-                log::info!("Temp {}: {temp}", ds.address);
-            }
-            let _ = ds.initiate_conversion(&mut ow).await;
-        }
         Timer::after(Duration::from_secs(1)).await;
-        log::info!("");
     }
 }

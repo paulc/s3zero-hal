@@ -1,13 +1,30 @@
 use esp_hal_rmt_onewire::{OneWire, OneWireConfig};
 
 #[derive(Debug)]
+pub struct OwAddress(u64);
+
+impl core::fmt::Display for OwAddress {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> Result<(), core::fmt::Error> {
+        for (i, k) in self.0.to_le_bytes().iter().enumerate() {
+            if i > 0 {
+                core::write!(f, ":")?;
+            }
+            core::write!(f, "{:02x}", k)?;
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug)]
 pub struct Ds18b20 {
-    pub address: u64,
+    pub address: OwAddress,
 }
 
 impl Ds18b20 {
     pub fn new(address: u64) -> Self {
-        Self { address }
+        Self {
+            address: OwAddress(address),
+        }
     }
     pub async fn initiate_conversion<'a, OW: OneWireConfig>(
         &self,
@@ -23,7 +40,7 @@ impl Ds18b20 {
         ow.send_byte(0x55)
             .await
             .map_err(|e| anyhow::anyhow!("OW Send Byte: {e:?}"))?;
-        ow.send_u64(self.address)
+        ow.send_u64(self.address.0)
             .await
             .map_err(|e| anyhow::anyhow!("OW Send u64: {e:?}"))?;
         ow.send_byte(0x44)
@@ -45,7 +62,7 @@ impl Ds18b20 {
         ow.send_byte(0x55)
             .await
             .map_err(|e| anyhow::anyhow!("OW Send Byte: {e:?}"))?;
-        ow.send_u64(self.address)
+        ow.send_u64(self.address.0)
             .await
             .map_err(|e| anyhow::anyhow!("OW Send u64: {e:?}"))?;
         ow.send_byte(0xBE)
