@@ -78,6 +78,8 @@ heapless = "0.9.1"
 embassy-sync = "0.7.1"
 bme280-rs = "0.3.0"
 bme280 = { version = "0.5.1", features = ["async"] }
+sensirion-i2c = { version = "0.4.0", features = ["embedded-hal-async"] }
+embedded-hal-async = "1.0.0"
 
 [profile.dev]
 # Rust debug is too slow.

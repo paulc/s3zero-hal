@@ -1310,6 +1310,7 @@ dependencies = [
  "embassy-sync 0.7.1",
  "embassy-time",
  "embedded-hal 1.0.0",
+ "embedded-hal-async",
  "embedded-io",
  "embedded-io-async",
  "embedded-storage",
@@ -1325,6 +1326,7 @@ dependencies = [
  "heapless 0.9.1",
  "log",
  "onewire",
+ "sensirion-i2c",
  "sequential-storage",
  "smoltcp",
  "static_cell",
@@ -1335,6 +1337,16 @@ name = "semihosting"
 version = "0.1.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c3e1c7d2b77d80283c750a39c52f1ab4d17234e8f30bca43550f5b2375f41d5f"
+
+[[package]]
+name = "sensirion-i2c"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "640a03c95c176226cf159ae2727f7fe3245546022639d61459af46d2878aec06"
+dependencies = [
+ "embedded-hal 1.0.0",
+ "embedded-hal-async",
+]
 
 [[package]]
 name = "sequential-storage"
