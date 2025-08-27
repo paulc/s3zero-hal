@@ -6,21 +6,30 @@
     holding buffers for the duration of a data transfer."
 )]
 
+use bme280_rs::{AsyncBme280, Configuration, Oversampling, SensorMode};
+use embassy_embedded_hal::shared_bus::asynch::i2c::I2cDevice;
 use embassy_executor::Spawner;
+use embassy_sync::blocking_mutex::raw::NoopRawMutex;
+use embassy_sync::mutex::Mutex;
 use embassy_time::{Delay, Duration, Timer};
 use esp_backtrace as _;
 use esp_hal::clock::CpuClock;
+use esp_hal::gpio::AnyPin;
 use esp_hal::i2c;
-use esp_hal::rmt::Rmt;
+use esp_hal::rmt::{ChannelCreator, Rmt};
 use esp_hal::time::Rate;
 use esp_hal::timer::systimer::SystemTimer;
 use esp_hal::timer::timg::TimerGroup;
+use esp_hal::Async;
 use esp_hal_rmt_onewire::{OneWire, Search};
 use log::info;
+use static_cell::StaticCell;
 
 use s3zero_hal::ds18b20::{check_onewire_crc, Ds18b20};
 use s3zero_hal::rgb::Rgb;
 use s3zero_hal::ws2812_rmt_single::{Ws2812Async, Ws2812Fixed, RMT_FREQ_MHZ};
+
+static I2C_BUS: StaticCell<Mutex<NoopRawMutex, i2c::master::I2c<Async>>> = StaticCell::new();
 
 // This creates a default app-descriptor required by the esp-idf bootloader.
 // For more information see: <https://docs.espressif.com/projects/esp-idf/en/stable/esp32/api-reference/system/app_image_format.html#application-description>
@@ -42,10 +51,7 @@ async fn led(mut ws2812: Ws2812Fixed) {
 }
 
 #[embassy_executor::task]
-async fn led_generic(
-    chan: esp_hal::rmt::ChannelCreator<esp_hal::Async, 0>,
-    gpio: esp_hal::gpio::AnyPin<'static>,
-) {
+async fn led_generic(chan: ChannelCreator<Async, 0>, gpio: AnyPin<'static>) {
     let mut ws2812 = Ws2812Async::new(chan, gpio).expect("Error initialising Ws2812");
     loop {
         for c in [Rgb::new(10, 0, 0), Rgb::new(0, 10, 0), Rgb::new(0, 0, 10)] {
@@ -57,8 +63,8 @@ async fn led_generic(
 }
 
 // OW Peripherals
-type OwTxRmtChan = esp_hal::rmt::ChannelCreator<esp_hal::Async, 3>;
-type OwRxRmtChan = esp_hal::rmt::ChannelCreator<esp_hal::Async, 4>;
+type OwTxRmtChan = ChannelCreator<Async, 3>;
+type OwRxRmtChan = ChannelCreator<Async, 4>;
 type OwPin = esp_hal::peripherals::GPIO6<'static>;
 
 #[embassy_executor::task]
@@ -151,17 +157,37 @@ async fn main(spawner: Spawner) {
         }
     }
 
-    let mut bme280 = bme280::i2c::BME280::new_primary(i2c);
-    bme280.init(&mut delay).expect("Error initialising BME280");
+    // Create shared I2C bus
+    let i2c_bus = I2C_BUS.init(Mutex::new(i2c));
+    let bme280_device = I2cDevice::new(i2c_bus);
+
+    let mut bme280 = AsyncBme280::new(bme280_device, &mut delay);
+    bme280.init().await.expect("Error initialising BME280");
+
+    let configuration = Configuration::default()
+        .with_temperature_oversampling(Oversampling::Oversample1)
+        .with_pressure_oversampling(Oversampling::Oversample1)
+        .with_humidity_oversampling(Oversampling::Oversample1)
+        .with_sensor_mode(SensorMode::Normal);
+
+    bme280
+        .set_sampling_configuration(configuration)
+        .await
+        .expect("Error serring BME280 configuretion");
+
+    let bme280_id = bme280
+        .chip_id()
+        .await
+        .expect("Error getting BME280 chip_id");
+    log::info!("BME280: ID={bme280_id}");
 
     loop {
         Timer::after(Duration::from_secs(1)).await;
-        if let Ok(m) = bme280.measure(&mut delay) {
-            log::info!(
-                "BME280: Temp = {:.2} Pressure = {:.0}",
-                m.temperature,
-                m.pressure
-            );
+        if let Ok(Some(t)) = bme280.read_temperature().await {
+            log::info!("BME280: Temp = {t:.2}°C");
+        }
+        if let Ok(Some(p)) = bme280.read_pressure().await {
+            log::info!("BME280: Pressure = {:.2} hPa", p / 100.0);
         }
     }
 }
