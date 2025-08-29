@@ -11,8 +11,6 @@ use embassy_executor::Spawner;
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
 use embassy_sync::mutex::Mutex;
 use embassy_time::{Delay, Duration, Timer};
-use embedded_hal::delay::DelayNs;
-use embedded_hal_async::i2c::I2c;
 use esp_backtrace as _;
 use esp_hal::clock::CpuClock;
 use esp_hal::gpio::AnyPin;
@@ -25,6 +23,7 @@ use log::info;
 use static_cell::StaticCell;
 
 use s3zero_hal::rgb::Rgb;
+use s3zero_hal::sgp41;
 use s3zero_hal::ws2812_rmt_single::{Ws2812Async, RMT_FREQ_MHZ};
 
 static I2C_BUS: StaticCell<Mutex<NoopRawMutex, i2c::master::I2c<Async>>> = StaticCell::new();
@@ -90,84 +89,25 @@ async fn main(spawner: Spawner) {
     let i2c_bus = I2C_BUS.init(Mutex::new(i2c));
 
     let mut sgp41 = sgp41::Sgp41::new(I2cDevice::new(i2c_bus), delay.clone());
-    let a = sgp41.get_serial_number().await.expect("SGP41");
-    log::info!("Serial: {a:012x}");
+
+    let sn = sgp41.get_serial_number().await.unwrap();
+    log::info!("Serial: {sn:012x}");
+
+    match sgp41.execute_conditioning().await {
+        Ok(v) => log::info!("SGP41 Conditioning: {v}"),
+        Err(e) => log::error!("SGP41 Conditioning: {e:?}"),
+    }
+
+    match sgp41.execute_self_test().await {
+        Ok(st) => log::info!("SGP41 Self Test: {st:?}"),
+        Err(e) => log::error!("SGP41 Self Test: {e:?}"),
+    }
 
     loop {
+        match sgp41.measure_raw_signals(None, None).await {
+            Ok(m) => log::info!("SGP41: {m:?}"),
+            Err(e) => log::error!("{e:?}"),
+        }
         Timer::after(Duration::from_secs(1)).await;
-    }
-}
-
-mod sgp41 {
-
-    use embedded_hal_async::delay::DelayNs;
-    use embedded_hal_async::i2c::I2c;
-
-    const SGP41_I2C_ADDRESS: u8 = 0x59;
-    const SGP4X_GET_SERIAL_NUMBER: [u8; 2] = [0x36, 0x82];
-
-    #[derive(Debug)]
-    pub enum SensorError<E> {
-        I2c(E),
-        CrcError,
-        InvalidResponse,
-    }
-
-    pub struct Sgp41<I2C, T> {
-        i2c: I2C,
-        timer: T,
-        address: u8,
-    }
-
-    impl<I2C, T> Sgp41<I2C, T>
-    where
-        I2C: I2c,
-        T: DelayNs,
-    {
-        pub fn new(i2c: I2C, timer: T) -> Self {
-            Self {
-                i2c,
-                timer,
-                address: SGP41_I2C_ADDRESS,
-            }
-        }
-        pub async fn get_serial_number(&mut self) -> Result<u64, SensorError<I2C::Error>> {
-            let mut buf = [0u8; 9];
-            self.i2c
-                .write_read(self.address, &SGP4X_GET_SERIAL_NUMBER, &mut buf)
-                .await
-                .map_err(|e| SensorError::I2c(e))?;
-            log::info!(">> Serial: {buf:?}");
-            let mut out: u64 = 0;
-            for c in buf.chunks_exact(3) {
-                let [a, b] = self.check_crc(c)?;
-                out = (out << 8) + a as u64;
-                out = (out << 8) + b as u64;
-            }
-            Ok(out)
-        }
-        fn check_crc(&self, data: &[u8]) -> Result<[u8; 2], SensorError<I2C::Error>> {
-            if data.len() == 3 && crc(&data[..2]) == data[2] {
-                Ok([data[0], data[1]])
-            } else {
-                Err(SensorError::CrcError)
-            }
-        }
-    }
-
-    fn crc(data: &[u8]) -> u8 {
-        const CRC8_POLYNOMIAL: u8 = 0x31;
-        let mut crc: u8 = 0xff;
-        for byte in data {
-            crc ^= byte;
-            for _ in 0..8 {
-                if (crc & 0x80) > 0 {
-                    crc = (crc << 1) ^ CRC8_POLYNOMIAL;
-                } else {
-                    crc <<= 1;
-                }
-            }
-        }
-        crc
     }
 }
