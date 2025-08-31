@@ -8,7 +8,6 @@
 )]
 
 use bme280_rs;
-// use bme280_rs::{AsyncBme280, Configuration, Oversampling, SensorMode};
 use embassy_embedded_hal::shared_bus::asynch::i2c::I2cDevice;
 use embassy_executor::Spawner;
 use embassy_net::{Runner, StackResources};
@@ -20,6 +19,7 @@ use esp_hal::clock::CpuClock;
 use esp_hal::gpio::AnyPin;
 use esp_hal::i2c;
 use esp_hal::rmt::{ChannelCreator, Rmt};
+use esp_hal::rng;
 use esp_hal::time::Rate;
 use esp_hal::timer::systimer::SystemTimer;
 use esp_hal::timer::timg::TimerGroup;
@@ -121,65 +121,18 @@ async fn main(spawner: Spawner) {
     let peripherals = esp_hal::init(config);
     let mut delay = Delay;
 
-    esp_alloc::heap_allocator!(size: 64 * 1024);
+    esp_alloc::heap_allocator!(size: 72 * 1024);
 
     let timer0 = SystemTimer::new(peripherals.SYSTIMER);
     esp_hal_embassy::init(timer0.alarm0);
 
     info!("Embassy initialized!");
 
-    let mut rng = esp_hal::rng::Rng::new(peripherals.RNG);
-    let timer1 = TimerGroup::new(peripherals.TIMG0);
+    let rng = esp_hal::rng::Rng::new(peripherals.RNG);
+    //let timer1 = TimerGroup::new(peripherals.TIMG0);
 
-    // ----- Wifi -----
-
-    //let wifi_init =
-    //    esp_wifi::init(timer1.timer0, rng).expect("Failed to initialize WIFI/BLE controller");
-    let esp_wifi_ctrl: &EspWifiController<'static> =
-        static_cell::make_static!(esp_wifi::init(timer1.timer0, rng.clone())
-            .expect("Failed to initialize WIFI/BLE controller"));
-
-    let (wifi_controller, interfaces) = esp_wifi::wifi::new(&esp_wifi_ctrl, peripherals.WIFI)
-        .expect("Failed to initialize WIFI controller");
-
-    let interface = interfaces.sta;
-    let config = embassy_net::Config::dhcpv4(Default::default());
-    log::info!("Wifi config: {config:?}");
-
-    let seed = (rng.random() as u64) << 32 | rng.random() as u64;
-
-    // Init network stack
-    let (stack, runner) = embassy_net::new(
-        interface,
-        config,
-        static_cell::make_static!(StackResources::<3>::new()),
-        // mk_static!(StackResources<3>, StackResources::<3>::new()),
-        seed,
-    );
-
-    spawner.spawn(connection(wifi_controller)).ok();
-    spawner.spawn(net_task(runner)).ok();
-
-    let mut rx_buffer = [0; 4096];
-    let mut tx_buffer = [0; 4096];
-
-    loop {
-        if stack.is_link_up() {
-            break;
-        }
-        Timer::after(Duration::from_millis(500)).await;
-    }
-
-    log::info!("Waiting to get IP address...");
-    loop {
-        if let Some(config) = stack.config_v4() {
-            log::info!("Got IP: {}", config.address);
-            break;
-        }
-        Timer::after(Duration::from_millis(500)).await;
-    }
-
-    // ----- Wifi -----
+    // Wifi
+    wifi_init(peripherals.WIFI, peripherals.TIMG0, rng.clone()).await;
 
     // Initialize RMT peripheral
     let rmt = Rmt::new(peripherals.RMT, Rate::from_mhz(RMT_FREQ_MHZ))
@@ -246,6 +199,56 @@ async fn main(spawner: Spawner) {
 
 const SSID: &str = env!("SSID");
 const PASSWORD: &str = env!("PASSWORD");
+
+async fn wifi_init(
+    wifi: esp_hal::peripherals::WIFI<'static>,
+    timer: esp_hal::peripherals::TIMG0<'static>,
+    rng: rng::Rng,
+) {
+    let mut rng = rng;
+    let timer1 = TimerGroup::new(timer);
+
+    let esp_wifi_ctrl: &EspWifiController<'static> =
+        static_cell::make_static!(esp_wifi::init(timer1.timer0, rng.clone())
+            .expect("Failed to initialize WIFI/BLE controller"));
+
+    let (wifi_controller, interfaces) =
+        esp_wifi::wifi::new(&esp_wifi_ctrl, wifi).expect("Failed to initialize WIFI controller");
+
+    let interface = interfaces.sta;
+    let config = embassy_net::Config::dhcpv4(Default::default());
+    log::info!("Wifi config: {config:?}");
+
+    let seed = (rng.random() as u64) << 32 | rng.random() as u64;
+
+    // Init network stack
+    let (stack, runner) = embassy_net::new(
+        interface,
+        config,
+        static_cell::make_static!(StackResources::<3>::new()),
+        seed,
+    );
+
+    let spawner = Spawner::for_current_executor().await;
+    spawner.spawn(connection(wifi_controller)).ok();
+    spawner.spawn(net_task(runner)).ok();
+
+    loop {
+        if stack.is_link_up() {
+            break;
+        }
+        Timer::after(Duration::from_millis(500)).await;
+    }
+
+    log::info!("Waiting to get IP address...");
+    loop {
+        if let Some(config) = stack.config_v4() {
+            log::info!("Got IP: {}", config.address);
+            break;
+        }
+        Timer::after(Duration::from_millis(500)).await;
+    }
+}
 
 #[embassy_executor::task]
 async fn connection(mut controller: WifiController<'static>) {
