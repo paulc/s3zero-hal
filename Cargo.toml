@@ -23,6 +23,7 @@ embassy-net = { version = "0.7.0", features = [
   "dhcpv4",
   "log",
   "medium-ethernet",
+  "dns",
   "tcp",
   "udp",
 ] }

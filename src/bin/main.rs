@@ -42,6 +42,202 @@ static I2C_BUS: StaticCell<Mutex<NoopRawMutex, i2c::master::I2c<Async>>> = Stati
 // For more information see: <https://docs.espressif.com/projects/esp-idf/en/stable/esp32/api-reference/system/app_image_format.html#application-description>
 esp_bootloader_esp_idf::esp_app_desc!();
 
+static WIFI_CONTROLLER: StaticCell<EspWifiController<'static>> = static_cell::StaticCell::new();
+
+#[esp_hal_embassy::main]
+async fn main(spawner: Spawner) {
+    // generator version: 0.5.0
+
+    esp_println::logger::init_logger_from_env();
+
+    let config = esp_hal::Config::default().with_cpu_clock(CpuClock::max());
+    let peripherals = esp_hal::init(config);
+    let mut delay = Delay;
+
+    esp_alloc::heap_allocator!(size: 96 * 1024);
+
+    let timer0 = SystemTimer::new(peripherals.SYSTIMER);
+    esp_hal_embassy::init(timer0.alarm0);
+
+    info!("Embassy initialized!");
+
+    let rng = esp_hal::rng::Rng::new(peripherals.RNG);
+
+    // Initialize Wifi
+    let tg = TimerGroup::new(peripherals.TIMG0);
+    let wifi_ctrl = WIFI_CONTROLLER.init(
+        esp_wifi::init(tg.timer0, rng.clone()).expect("Failed to initialize WIFI/BLE controller"),
+    );
+
+    wifi_init(peripherals.WIFI, wifi_ctrl, rng.clone()).await;
+
+    // Initialize RMT peripheral
+    let rmt = Rmt::new(peripherals.RMT, Rate::from_mhz(RMT_FREQ_MHZ))
+        .expect("Error initialising RMT")
+        .into_async();
+
+    spawner
+        .spawn(led_generic(rmt.channel0, peripherals.GPIO21.into()))
+        .expect("Error spawning led task");
+
+    spawner
+        .spawn(onewire_task(rmt.channel3, rmt.channel4, peripherals.GPIO6))
+        .expect("Error spawning OneWire task");
+
+    // Initialise I2C
+    let i2c_config = i2c::master::Config::default().with_frequency(Rate::from_khz(100));
+    let mut i2c = i2c::master::I2c::new(peripherals.I2C0, i2c_config)
+        .expect("Error initailising I2C")
+        .with_scl(peripherals.GPIO4)
+        .with_sda(peripherals.GPIO5)
+        .into_async();
+
+    // I2C Bus Scan
+    for addr in 0..=127 {
+        if let Ok(_) = i2c.write_async(addr, &[0]).await {
+            info!("Found I2C device at address: 0x{:02x}", addr);
+        }
+    }
+
+    // Create shared I2C bus
+    let i2c_bus = I2C_BUS.init(Mutex::new(i2c));
+    let bme280_device = I2cDevice::new(i2c_bus);
+
+    let mut bme280 = bme280_rs::AsyncBme280::new(bme280_device, &mut delay);
+    bme280.init().await.expect("Error initialising BME280");
+
+    let configuration = bme280_rs::Configuration::default()
+        .with_temperature_oversampling(bme280_rs::Oversampling::Oversample1)
+        .with_pressure_oversampling(bme280_rs::Oversampling::Oversample1)
+        .with_humidity_oversampling(bme280_rs::Oversampling::Oversample1)
+        .with_sensor_mode(bme280_rs::SensorMode::Normal);
+
+    bme280
+        .set_sampling_configuration(configuration)
+        .await
+        .expect("Error serring BME280 configuretion");
+
+    let bme280_id = bme280
+        .chip_id()
+        .await
+        .expect("Error getting BME280 chip_id");
+    log::info!("BME280: ID={bme280_id}");
+
+    log::info!("Heap: {:?}", esp_alloc::HEAP.stats());
+
+    loop {
+        Timer::after(Duration::from_secs(1)).await;
+        if let Ok(Some(t)) = bme280.read_temperature().await {
+            log::info!("BME280: Temp = {t:.2}°C");
+        }
+        if let Ok(Some(p)) = bme280.read_pressure().await {
+            log::info!("BME280: Pressure = {:.2} hPa", p / 100.0);
+        }
+    }
+}
+
+const SSID: &str = env!("SSID");
+const PASSWORD: &str = env!("PASSWORD");
+
+async fn wifi_init(
+    wifi: esp_hal::peripherals::WIFI<'static>,
+    wifi_ctrl: &'static mut EspWifiController<'static>,
+    rng: rng::Rng,
+) {
+    let mut rng = rng;
+
+    let (wifi_controller, interfaces) =
+        esp_wifi::wifi::new(wifi_ctrl, wifi).expect("Failed to initialize WIFI controller");
+
+    let interface = interfaces.sta;
+    let config = embassy_net::Config::dhcpv4(Default::default());
+    log::info!("Wifi config: {config:?}");
+
+    let seed = (rng.random() as u64) << 32 | rng.random() as u64;
+
+    // Init network stack
+    let (stack, runner) = embassy_net::new(
+        interface,
+        config,
+        static_cell::make_static!(StackResources::<3>::new()),
+        seed,
+    );
+
+    let spawner = Spawner::for_current_executor().await;
+    spawner.spawn(connection(wifi_controller)).ok();
+    spawner.spawn(net_task(runner)).ok();
+
+    loop {
+        if stack.is_link_up() {
+            break;
+        }
+        Timer::after(Duration::from_millis(500)).await;
+    }
+
+    log::info!("Waiting to get IP address...");
+    loop {
+        if let Some(config) = stack.config_v4() {
+            log::info!("Got IP: {}", config.address);
+            break;
+        }
+        Timer::after(Duration::from_millis(500)).await;
+    }
+
+    if let Ok(qr) = stack
+        .dns_query("www.google.com", embassy_net::dns::DnsQueryType::A)
+        .await
+    {
+        log::info!("QR: {qr:?}");
+    }
+}
+
+#[embassy_executor::task]
+async fn connection(mut controller: WifiController<'static>) {
+    log::info!("start connection task");
+    log::info!("Device capabilities: {:?}", controller.capabilities());
+    loop {
+        match esp_wifi::wifi::wifi_state() {
+            WifiState::StaConnected => {
+                // wait until we're no longer connected
+                controller.wait_for_event(WifiEvent::StaDisconnected).await;
+                Timer::after(Duration::from_millis(5000)).await
+            }
+            _ => {}
+        }
+        if !matches!(controller.is_started(), Ok(true)) {
+            let client_config = Configuration::Client(ClientConfiguration {
+                ssid: SSID.into(),
+                password: PASSWORD.into(),
+                ..Default::default()
+            });
+            controller.set_configuration(&client_config).unwrap();
+            log::info!("Starting wifi");
+            controller.start_async().await.unwrap();
+            log::info!("Wifi started!");
+
+            log::info!("Scan");
+            let result = controller.scan_n_async(10).await.unwrap();
+            for ap in result {
+                log::info!("{:?}", ap);
+            }
+        }
+        log::info!("About to connect...");
+
+        match controller.connect_async().await {
+            Ok(_) => log::info!("Wifi connected!"),
+            Err(e) => {
+                log::info!("Failed to connect to wifi: {e:?}");
+                Timer::after(Duration::from_millis(5000)).await
+            }
+        }
+    }
+}
+
+#[embassy_executor::task]
+async fn net_task(mut runner: Runner<'static, WifiDevice<'static>>) {
+    runner.run().await
+}
+
 #[embassy_executor::task]
 async fn led(mut ws2812: Ws2812Fixed) {
     loop {
@@ -109,190 +305,4 @@ async fn onewire_task(tx_chan: OwTxRmtChan, rx_chan: OwRxRmtChan, pin: OwPin) {
         }
         Timer::after(Duration::from_secs(1)).await;
     }
-}
-
-#[esp_hal_embassy::main]
-async fn main(spawner: Spawner) {
-    // generator version: 0.5.0
-
-    esp_println::logger::init_logger_from_env();
-
-    let config = esp_hal::Config::default().with_cpu_clock(CpuClock::max());
-    let peripherals = esp_hal::init(config);
-    let mut delay = Delay;
-
-    esp_alloc::heap_allocator!(size: 72 * 1024);
-
-    let timer0 = SystemTimer::new(peripherals.SYSTIMER);
-    esp_hal_embassy::init(timer0.alarm0);
-
-    info!("Embassy initialized!");
-
-    let rng = esp_hal::rng::Rng::new(peripherals.RNG);
-    //let timer1 = TimerGroup::new(peripherals.TIMG0);
-
-    // Wifi
-    wifi_init(peripherals.WIFI, peripherals.TIMG0, rng.clone()).await;
-
-    // Initialize RMT peripheral
-    let rmt = Rmt::new(peripherals.RMT, Rate::from_mhz(RMT_FREQ_MHZ))
-        .expect("Error initialising RMT")
-        .into_async();
-
-    spawner
-        .spawn(led_generic(rmt.channel0, peripherals.GPIO21.into()))
-        .expect("Error spawning led task");
-
-    spawner
-        .spawn(onewire_task(rmt.channel3, rmt.channel4, peripherals.GPIO6))
-        .expect("Error spawning OneWire task");
-
-    // Initialise I2C
-    let i2c_config = i2c::master::Config::default().with_frequency(Rate::from_khz(100));
-    let mut i2c = i2c::master::I2c::new(peripherals.I2C0, i2c_config)
-        .expect("Error initailising I2C")
-        .with_scl(peripherals.GPIO4)
-        .with_sda(peripherals.GPIO5)
-        .into_async();
-
-    // I2C Bus Scan
-    for addr in 0..=127 {
-        if let Ok(_) = i2c.write_async(addr, &[0]).await {
-            info!("Found I2C device at address: 0x{:02x}", addr);
-        }
-    }
-
-    // Create shared I2C bus
-    let i2c_bus = I2C_BUS.init(Mutex::new(i2c));
-    let bme280_device = I2cDevice::new(i2c_bus);
-
-    let mut bme280 = bme280_rs::AsyncBme280::new(bme280_device, &mut delay);
-    bme280.init().await.expect("Error initialising BME280");
-
-    let configuration = bme280_rs::Configuration::default()
-        .with_temperature_oversampling(bme280_rs::Oversampling::Oversample1)
-        .with_pressure_oversampling(bme280_rs::Oversampling::Oversample1)
-        .with_humidity_oversampling(bme280_rs::Oversampling::Oversample1)
-        .with_sensor_mode(bme280_rs::SensorMode::Normal);
-
-    bme280
-        .set_sampling_configuration(configuration)
-        .await
-        .expect("Error serring BME280 configuretion");
-
-    let bme280_id = bme280
-        .chip_id()
-        .await
-        .expect("Error getting BME280 chip_id");
-    log::info!("BME280: ID={bme280_id}");
-
-    loop {
-        Timer::after(Duration::from_secs(1)).await;
-        if let Ok(Some(t)) = bme280.read_temperature().await {
-            log::info!("BME280: Temp = {t:.2}°C");
-        }
-        if let Ok(Some(p)) = bme280.read_pressure().await {
-            log::info!("BME280: Pressure = {:.2} hPa", p / 100.0);
-        }
-    }
-}
-
-const SSID: &str = env!("SSID");
-const PASSWORD: &str = env!("PASSWORD");
-
-async fn wifi_init(
-    wifi: esp_hal::peripherals::WIFI<'static>,
-    timer: esp_hal::peripherals::TIMG0<'static>,
-    rng: rng::Rng,
-) {
-    let mut rng = rng;
-    let timer1 = TimerGroup::new(timer);
-
-    let esp_wifi_ctrl: &EspWifiController<'static> =
-        static_cell::make_static!(esp_wifi::init(timer1.timer0, rng.clone())
-            .expect("Failed to initialize WIFI/BLE controller"));
-
-    let (wifi_controller, interfaces) =
-        esp_wifi::wifi::new(&esp_wifi_ctrl, wifi).expect("Failed to initialize WIFI controller");
-
-    let interface = interfaces.sta;
-    let config = embassy_net::Config::dhcpv4(Default::default());
-    log::info!("Wifi config: {config:?}");
-
-    let seed = (rng.random() as u64) << 32 | rng.random() as u64;
-
-    // Init network stack
-    let (stack, runner) = embassy_net::new(
-        interface,
-        config,
-        static_cell::make_static!(StackResources::<3>::new()),
-        seed,
-    );
-
-    let spawner = Spawner::for_current_executor().await;
-    spawner.spawn(connection(wifi_controller)).ok();
-    spawner.spawn(net_task(runner)).ok();
-
-    loop {
-        if stack.is_link_up() {
-            break;
-        }
-        Timer::after(Duration::from_millis(500)).await;
-    }
-
-    log::info!("Waiting to get IP address...");
-    loop {
-        if let Some(config) = stack.config_v4() {
-            log::info!("Got IP: {}", config.address);
-            break;
-        }
-        Timer::after(Duration::from_millis(500)).await;
-    }
-}
-
-#[embassy_executor::task]
-async fn connection(mut controller: WifiController<'static>) {
-    log::info!("start connection task");
-    log::info!("Device capabilities: {:?}", controller.capabilities());
-    loop {
-        match esp_wifi::wifi::wifi_state() {
-            WifiState::StaConnected => {
-                // wait until we're no longer connected
-                controller.wait_for_event(WifiEvent::StaDisconnected).await;
-                Timer::after(Duration::from_millis(5000)).await
-            }
-            _ => {}
-        }
-        if !matches!(controller.is_started(), Ok(true)) {
-            let client_config = Configuration::Client(ClientConfiguration {
-                ssid: SSID.into(),
-                password: PASSWORD.into(),
-                ..Default::default()
-            });
-            controller.set_configuration(&client_config).unwrap();
-            log::info!("Starting wifi");
-            controller.start_async().await.unwrap();
-            log::info!("Wifi started!");
-
-            log::info!("Scan");
-            let result = controller.scan_n_async(10).await.unwrap();
-            for ap in result {
-                log::info!("{:?}", ap);
-            }
-        }
-        log::info!("About to connect...");
-
-        match controller.connect_async().await {
-            Ok(_) => log::info!("Wifi connected!"),
-            Err(e) => {
-                log::info!("Failed to connect to wifi: {e:?}");
-                Timer::after(Duration::from_millis(5000)).await
-            }
-        }
-    }
-}
-
-#[embassy_executor::task]
-async fn net_task(mut runner: Runner<'static, WifiDevice<'static>>) {
-    runner.run().await
 }
